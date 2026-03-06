@@ -5,7 +5,7 @@ using System.Linq;
 using System;
 using System.Reflection;
 
-[BepInPlugin("com.kingcox.sbg.pipballcam", "SBG PiP Ball Cam", "1.1.1")]
+[BepInPlugin("com.kingcox.sbg.pipballcam", "SBG PiP Ball Cam", "1.1.4")]
 public class BallCamMod : BaseUnityPlugin
 {
     private Camera _ballCam;
@@ -96,14 +96,12 @@ public class BallCamMod : BaseUnityPlugin
             return;
         }
 
-        PlayerInfo targetPlayer = GetActualSpectatorTarget();
-        PlayerGolfer golfer = GetAsGolfer(targetPlayer);
+        // Get the appropriate ball based on our current state
+        GolfBall targetBall = DetermineTargetBall();
 
-        if (golfer != null && golfer.OwnBall != null)
+        if (targetBall != null)
         {
-            var targetBall = golfer.OwnBall;
-            _currentTargetName = GetSafeName(targetPlayer);
-            
+            // Assuming GolfBall has a Rigidbody property based on your original code
             float speed = GetBallVelocity(targetBall.Rigidbody).magnitude;
 
             if (speed > _movementThreshold || (Time.time - _lastMoveTime < _lingerTime))
@@ -121,6 +119,40 @@ public class BallCamMod : BaseUnityPlugin
         {
             ClosePip();
         }
+    }
+
+    // Completely replaces GetActualSpectatorTarget()
+    private GolfBall DetermineTargetBall()
+    {
+        var lp = GameManager.LocalPlayerInfo;
+        if (lp == null) return null;
+
+        // Directly access the component we reverse-engineered
+        var spectator = lp.GetComponent<PlayerSpectator>();
+
+        // 1. Check if we are actively spectating
+        if (spectator != null && spectator.IsSpectating)
+        {
+            // 2. Check if the game is making us spectate a specific loose ball
+            if (spectator.TargetBall != null)
+            {
+                _currentTargetName = "Spectated Ball";
+                return spectator.TargetBall;
+            }
+
+            // 3. Check if we are spectating a specific player
+            if (spectator.TargetPlayer != null)
+            {
+                _currentTargetName = GetSafeName(spectator.TargetPlayer);
+                var spectatedGolfer = GetAsGolfer(spectator.TargetPlayer);
+                return spectatedGolfer?.OwnBall;
+            }
+        }
+
+        // 4. Fallback: We are not spectating, so track our own ball
+        _currentTargetName = GetSafeName(lp);
+        var localGolfer = GetAsGolfer(lp);
+        return localGolfer?.OwnBall;
     }
 
     private void ShowPip(GolfBall ball)
@@ -148,40 +180,6 @@ public class BallCamMod : BaseUnityPlugin
         _ballCam.transform.LookAt(currentBallPos + Vector3.up * 0.15f);
     }
 
-    private PlayerInfo GetActualSpectatorTarget()
-    {
-        var lp = GameManager.LocalPlayerInfo;
-        var specBase = GetAsSpectator(lp);
-
-        if (specBase == null) return lp;
-        
-        try {
-            var isSpecProp = specBase.GetType().GetProperty("IsSpectating");
-            bool isSpec = (bool)(isSpecProp?.GetValue(specBase) ?? false);
-            if (!isSpec) return lp;
-
-            var targetField = specBase.GetType().GetField("TargetPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (targetField != null) {
-                var val = targetField.GetValue(specBase) as PlayerInfo;
-                if (val != null) return val;
-            }
-        } catch { }
-
-        var allTexts = UnityEngine.Object.FindObjectsByType<Text>(FindObjectsSortMode.None);
-        foreach (var txt in allTexts)
-        {
-            if (txt.gameObject.name.Contains("Name") && !string.IsNullOrEmpty(txt.text))
-            {
-                string viewingName = txt.text;
-                var foundPlayer = UnityEngine.Object.FindObjectsByType<PlayerInfo>(FindObjectsSortMode.None)
-                                    .FirstOrDefault(p => GetSafeName(p) == viewingName);
-                if (foundPlayer != null) return foundPlayer;
-            }
-        }
-
-        return lp;
-    }
-
     private void ClosePip()
     {
         if (_ballCamObj != null)
@@ -194,21 +192,42 @@ public class BallCamMod : BaseUnityPlugin
 
     private void OnGUI()
     {
-        // Visibility check
+        // 1. Visibility checks
         if (_ballCamObj == null || !_ballCamObj.activeInHierarchy || _ballCam == null || !_ballCam.enabled)
         {
             return;
         }
 
         if (string.IsNullOrEmpty(_currentTargetName)) return;
+        if (_labelStyle == null) return; // Extra safety check
 
-        // Position Math
+        // 2. Position and Style Setup
         Rect r = _ballCam.pixelRect;
         float guiX = r.x;
-        float guiY = (Screen.height - r.yMax) - 30f; 
+        float guiY = (Screen.height - r.yMax) + 5f; 
 
-        // Draw nameplate using the now-initialized _labelStyle
-        GUI.Label(new Rect(guiX, guiY, r.width, 30f), $"<b>{_currentTargetName}</b>", _labelStyle);
+        Rect mainRect = new Rect(guiX, guiY, r.width, 5f);
+        string mainText = $"<b>{_currentTargetName}</b>";
+
+        // Create a temporary style for the outline that is identical but black
+        GUIStyle outlineStyle = new GUIStyle(_labelStyle);
+        outlineStyle.normal.textColor = Color.black;
+
+        // 3. Draw the Outline (4 directions)
+        // Adjust the offset if you want a thicker outline.
+        float offset = 2f;
+
+        // Up-Left
+        GUI.Label(new Rect(mainRect.x - offset, mainRect.y - offset, mainRect.width, mainRect.height), mainText, outlineStyle);
+        // Up-Right
+        GUI.Label(new Rect(mainRect.x + offset, mainRect.y - offset, mainRect.width, mainRect.height), mainText, outlineStyle);
+        // Down-Left
+        GUI.Label(new Rect(mainRect.x - offset, mainRect.y + offset, mainRect.width, mainRect.height), mainText, outlineStyle);
+        // Down-Right
+        GUI.Label(new Rect(mainRect.x + offset, mainRect.y + offset, mainRect.width, mainRect.height), mainText, outlineStyle);
+
+        // 4. Draw the Main White Text
+        GUI.Label(mainRect, mainText, _labelStyle);
     }
 
     private void CreateBallCamera()
